@@ -34,7 +34,7 @@ FEATURE_CACHE := eval_features.pickle
 ifneq ($(wildcard /usr/bin/nvidia-docker),)
 	DOCKER_RUN_CMD := nvidia-docker run
 else
-	DOCKER_RUN_CMD := docker run --gpus=all
+	DOCKER_RUN_CMD := docker run
 endif
 
 .PHONY: setup
@@ -43,7 +43,7 @@ setup:
 		mkdir $(BUILD_DIR); \
 	fi
 	@if [ ! -e $(MLPERF_CONF) ]; then \
-		cp ../../mlperf.conf $(MLPERF_CONF); \
+		cp mlperf.conf $(MLPERF_CONF); \
 	fi
 	@$(MAKE) -f $(MAKEFILE_NAME) init_submodule
 	@$(MAKE) -f $(MAKEFILE_NAME) download_data
