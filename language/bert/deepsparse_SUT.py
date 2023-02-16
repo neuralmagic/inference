@@ -23,7 +23,7 @@ sys.path.insert(0, os.getcwd())
 import mlperf_loadgen as lg
 import numpy as np
 from deepsparse import compile_model, Scheduler
-from deepsparse.utils import generate_random_inputs
+from deepsparse.utils import generate_random_inputs, model_to_path
 from squad_QSL import get_squad_QSL
 
 
@@ -36,6 +36,8 @@ def batched_list(lst, n):
 def scenario_to_scheduler(scenario):
     if scenario == "SingleStream":
         return Scheduler.single_stream
+    elif scenario == "MultiStream":
+        return Scheduler.single_stream
     elif scenario == "Offline":
         return Scheduler.single_stream
     elif scenario == "Server":
@@ -46,7 +48,7 @@ def scenario_to_scheduler(scenario):
 class BERT_DeepSparse_SUT():
     def __init__(self, args):
         self.profile = args.profile
-        self.model_path = args.model_path
+        self.model_path = model_to_path(args.model_path)
         self.batch_size = args.batch_size
         self.scenario = args.scenario
         self.responses_sent = 0
@@ -104,6 +106,7 @@ class BERT_DeepSparse_SUT():
         elif self.scenario == "Offline":
             #  Extracting features to be split into batches
             eval_features = [self.qsl.get_features(query_samples[i].index) for i in range(len(query_samples))]
+            batch_ind = 0
             for batch_ind, batched_features in enumerate(batched_list(eval_features, self.batch_size)):
                 fd = self.process_batch(batched_features)
                 scores = self.sess.run(fd)
