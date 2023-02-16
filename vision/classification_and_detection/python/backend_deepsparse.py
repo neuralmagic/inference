@@ -29,9 +29,10 @@ class BackendDeepsparse(backend.Backend):
     def __init__(self):
         super(BackendDeepsparse, self).__init__()
         self.engine = None
-        self.max_batchsize = 1
-        self.num_streams = 1
-        self.scenario = "SingleStream"
+        # vv Needs to be set by driver script
+        self.max_batchsize = None
+        self.num_streams = None
+        self.scenario = None
 
     def version(self):
         return deepsparse.__version__
