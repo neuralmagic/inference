@@ -15,6 +15,8 @@ import backend
 def scenario_to_scheduler(scenario):
     if scenario == "SingleStream":
         return deepsparse.Scheduler.single_stream
+    elif scenario == "MultiStream":
+        return deepsparse.Scheduler.single_stream
     elif scenario == "Offline":
         return deepsparse.Scheduler.multi_stream
     elif scenario == "Server":
