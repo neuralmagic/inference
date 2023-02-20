@@ -32,7 +32,7 @@ max_query_length = 64
 doc_stride = 128
 
 class SQuAD_v1_QSL():
-    def __init__(self, total_count_override=None, perf_count_override=None, cache_path='eval_features.pickle'):
+    def __init__(self, total_count_override=None, perf_count_override=None, cache_path='eval_features.pickle', unpadding_lengths=None):
         print("Constructing QSL...")
         eval_features = []
         # Load features if cached, convert from examples otherwise.
@@ -74,6 +74,42 @@ class SQuAD_v1_QSL():
             with open(cache_path, 'wb') as cache_file:
                 pickle.dump(eval_features, cache_file)
 
+        # Set up metadata on padding for eval_features
+        if unpadding_lengths:
+            import numpy as np
+
+            unpadding_lengths = sorted(unpadding_lengths)
+
+            def find_min_length(feature_array):
+                for sl in unpadding_lengths:
+                    if len(feature_array) <= sl:
+                        return sl
+                # If we don't find anything, use the largest
+                return unpadding_lengths[-1]
+            min_lengths = []
+            for i in range(len(eval_features)):
+                # Trim all the zeros from the back aka padding
+                padded_input_ids = np.array(eval_features[i].input_ids).astype(np.int64)
+                padded_input_mask = np.array(eval_features[i].input_mask).astype(np.int64)
+                padded_segment_ids = np.array(eval_features[i].segment_ids).astype(np.int64)
+                unpadded_input_ids = np.trim_zeros(padded_input_ids, 'b')
+                unpadded_input_mask = np.trim_zeros(padded_input_mask, 'b')
+                unpadded_segment_ids = np.trim_zeros(padded_segment_ids, 'b')
+
+                assert len(unpadded_input_ids) == len(unpadded_input_mask) == len(unpadded_segment_ids)
+
+                min_lengths.append(len(unpadded_input_ids))
+                min_pad_length = find_min_length(unpadded_input_ids)
+                min_padding = min_pad_length - len(unpadded_input_ids)
+
+                eval_features[i].min_pad_length = min_pad_length
+                eval_features[i].unpadded_input_ids = np.pad(unpadded_input_ids, (0, min_padding))
+                eval_features[i].unpadded_input_mask = np.pad(unpadded_input_mask, (0, min_padding))
+                eval_features[i].unpadded_segment_ids = np.pad(unpadded_segment_ids, (0, min_padding))
+
+            import pandas as pd
+            print(pd.DataFrame(min_lengths).describe())
+
         self.eval_features = eval_features
         self.count = total_count_override or len(self.eval_features)
         self.perf_count = perf_count_override or self.count
@@ -92,5 +128,5 @@ class SQuAD_v1_QSL():
     def __del__(self):
         print("Finished destroying QSL.")
 
-def get_squad_QSL(total_count_override=None, perf_count_override=None):
-    return SQuAD_v1_QSL(total_count_override, perf_count_override)
+def get_squad_QSL(total_count_override=None, perf_count_override=None, unpadding_lengths=None):
+    return SQuAD_v1_QSL(total_count_override, perf_count_override, unpadding_lengths=unpadding_lengths)
