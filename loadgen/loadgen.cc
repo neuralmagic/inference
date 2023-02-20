@@ -1162,6 +1162,25 @@ void StartTest(SystemUnderTest* sut, QuerySampleLibrary* qsl,
     test_settings.FromConfig(audit_config_filename, generic_model,
                              audit_scenario);
   }
+  if(test_settings.test05){
+    // If the configuration indicates we are running test05,
+    // random seeds
+    LogDetail([](AsyncDetail& detail) {
+#if USE_NEW_LOGGING_FORMAT
+      MLPERF_LOG_WARNING(detail, "warning_generic_message",
+                         "Test05 flag detected"
+                         " Overriding random seeds");
+#else
+      detail(
+          "Test05 flag detected"
+          " Overriding random seeds");
+#endif
+    });
+    test_settings.mode = TestMode::PerformanceOnly;
+    test_settings.qsl_rng_seed = requested_settings.test05_qsl_rng_seed;
+    test_settings.sample_index_rng_seed = requested_settings.test05_sample_index_rng_seed;
+    test_settings.schedule_rng_seed = requested_settings.test05_schedule_rng_seed;
+  }
 
   loadgen::TestSettingsInternal sanitized_settings(
       test_settings, qsl->PerformanceSampleCount());
