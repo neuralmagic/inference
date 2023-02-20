@@ -86,7 +86,7 @@ class SQuAD_v1_QSL():
                         return sl
                 # If we don't find anything, use the largest
                 return unpadding_lengths[-1]
-            min_lengths = []
+
             for i in range(len(eval_features)):
                 # Trim all the zeros from the back aka padding
                 padded_input_ids = np.array(eval_features[i].input_ids).astype(np.int64)
@@ -98,7 +98,6 @@ class SQuAD_v1_QSL():
 
                 assert len(unpadded_input_ids) == len(unpadded_input_mask) == len(unpadded_segment_ids)
 
-                min_lengths.append(len(unpadded_input_ids))
                 min_pad_length = find_min_length(unpadded_input_ids)
                 min_padding = min_pad_length - len(unpadded_input_ids)
 
@@ -106,9 +105,6 @@ class SQuAD_v1_QSL():
                 eval_features[i].unpadded_input_ids = np.pad(unpadded_input_ids, (0, min_padding))
                 eval_features[i].unpadded_input_mask = np.pad(unpadded_input_mask, (0, min_padding))
                 eval_features[i].unpadded_segment_ids = np.pad(unpadded_segment_ids, (0, min_padding))
-
-            import pandas as pd
-            print(pd.DataFrame(min_lengths).describe())
 
         self.eval_features = eval_features
         self.count = total_count_override or len(self.eval_features)
