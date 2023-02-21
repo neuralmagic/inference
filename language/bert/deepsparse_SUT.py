@@ -29,10 +29,9 @@ from squad_QSL import get_squad_QSL
 MAX_SEQ_LEN = 384
 
 def batched_list(lst, n):
-    """Yield successive n-sized chunks from lst."""
+    """Yield successive n-sized chunks from lst, with the last possibly short."""
     for i in range(0, len(lst), n):
-        if (i+n) <= len(lst): # last batch will be dealt with outside
-            yield lst[i:i + n]
+        yield lst[i:i + n]
 
 def scenario_to_scheduler(scenario):
     if scenario == "SingleStream":
@@ -87,8 +86,7 @@ class BERT_DeepSparse_SUT():
         return self.engines[sequence_length].run(input, val_inp=False)
 
     def pad_to_batch(self, x):
-        x_pad = np.zeros((self.batch_size, x.shape[1]), dtype=np.int64)
-        x_pad[:x.shape[0], :x.shape[1]] = x
+        x_pad = np.pad(x, ((0,self.batch_size-x.shape[0]), (0,0)))
         return x_pad
 
     def process_batch(self, batched_features):
@@ -132,6 +130,7 @@ class BERT_DeepSparse_SUT():
             for bucket_seq_len, bucket_eval_features in bucketed_features.items():
                 batch_ind = 0
                 for batch_ind, batched_features in enumerate(batched_list(bucket_eval_features, self.batch_size)):
+                    unpadded_batch_size = len(batched_features)
                     fd = self.process_batch(batched_features)
 
                     scores = self.predict(fd, bucket_seq_len)
@@ -141,28 +140,10 @@ class BERT_DeepSparse_SUT():
                         output = np.pad(output, ((0,0), (0,MAX_SEQ_LEN-output.shape[1]), (0,0)))
 
                     # sending responses individually
-                    for sample in range(self.batch_size):
+                    for sample in range(unpadded_batch_size):
                         response_array = array.array("B", output[sample].tobytes())
                         bi = response_array.buffer_info()
                         lg.QuerySamplesComplete([lg.QuerySampleResponse(batched_features[sample].query_id, bi[0], bi[1])])
-
-                # batch remainder in sync
-                last_ind = (batch_ind + 1) * self.batch_size
-                if last_ind < len(bucket_eval_features) - 1:
-                    batched_features = bucket_eval_features[last_ind:]
-                    fd = self.process_batch(batched_features)
-
-                    scores = self.predict(fd, bucket_seq_len)
-
-                    output = np.stack(scores, axis=-1)[:len(batched_features)]
-                    if output.shape[1] < MAX_SEQ_LEN:
-                        output = np.pad(output, ((0,0), (0,MAX_SEQ_LEN-output.shape[1]), (0,0)))
-
-                    for sample in range(len(output)):
-                        response_array = array.array("B", output[sample].tobytes())
-                        bi = response_array.buffer_info()
-                        lg.QuerySamplesComplete([lg.QuerySampleResponse(batched_features[sample].query_id, bi[0], bi[1])])
-
 
         else:
             raise Exception("Unknown scenario", scenario)
