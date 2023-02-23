@@ -66,6 +66,7 @@ class BERT_DeepSparse_SUT():
         self.scheduler = scenario_to_scheduler(args.scenario)
         self.sequence_lengths = [64, 128, 192, 256, MAX_SEQ_LEN]
         # self.sequence_lengths = [MAX_SEQ_LEN]
+        os.environ["NM_BIND_THREADS_TO_CORES"] = "1"
 
         print("Loading ONNX model...", self.model_path)
         self.engines = create_engines(self.model_path, batch_size=self.batch_size, scheduler=self.scheduler, sequence_lengths=self.sequence_lengths)
