@@ -23,7 +23,7 @@ sys.path.insert(0, os.getcwd())
 import mlperf_loadgen as lg
 import numpy as np
 from deepsparse import Engine, Scheduler
-from deepsparse.utils import generate_random_inputs, model_to_path
+from deepsparse.utils import generate_random_inputs, model_to_path, override_onnx_input_shapes
 from squad_QSL import get_squad_QSL
 
 MAX_SEQ_LEN = 384
@@ -64,8 +64,8 @@ class BERT_DeepSparse_SUT():
         self.batch_size = args.batch_size
         self.scenario = args.scenario
         self.scheduler = scenario_to_scheduler(args.scenario)
-        self.sequence_lengths = [64, 128, 192, 256, 384]
-        # self.sequence_lengths = [384]
+        self.sequence_lengths = [64, 128, 192, 256, MAX_SEQ_LEN]
+        # self.sequence_lengths = [MAX_SEQ_LEN]
 
         print("Loading ONNX model...", self.model_path)
         self.engines = create_engines(self.model_path, batch_size=self.batch_size, scheduler=self.scheduler, sequence_lengths=self.sequence_lengths)
@@ -77,9 +77,10 @@ class BERT_DeepSparse_SUT():
         self.qsl = get_squad_QSL(total_count_override=args.max_examples, unpadding_lengths=self.sequence_lengths)
 
         print("Warming up engine...")
-        warmup_inputs = generate_random_inputs(self.model_path, self.batch_size)
-        for i in range(5):
-            self.predict(warmup_inputs, MAX_SEQ_LEN)
+        with override_onnx_input_shapes(self.model_path, input_shapes=[[self.batch_size, MAX_SEQ_LEN]]) as model_path:
+            warmup_inputs = generate_random_inputs(model_path, self.batch_size)
+            for i in range(5):
+                self.predict(warmup_inputs, MAX_SEQ_LEN)
 
     def predict(self, input, sequence_length):
         # Choose the right engine and run
