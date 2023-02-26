@@ -114,13 +114,10 @@ class PostProcessArgMax:
         self.total = 0
 
     def __call__(self, results, ids, expected=None, result_dict=None):
-        processed_results = []
-        results = np.argmax(results[0], axis=1)
-        n = results.shape[0]
+        processed_results = np.argmax(results[0], axis=1) + self.offset
+        n = processed_results.shape[0]
         for idx in range(0, n):
-            result = results[idx] + self.offset
-            processed_results.append([result])
-            if result == expected[idx]:
+            if processed_results[idx] == expected[idx]:
                 self.good += 1
         self.total += n
         return processed_results

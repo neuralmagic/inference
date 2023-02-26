@@ -360,14 +360,10 @@ class RunnerBase:
     def enqueue(self, query_samples):
         idx = [q.index for q in query_samples]
         query_id = [q.id for q in query_samples]
-        if len(query_samples) < self.max_batchsize:
-            data, label = self.ds.get_samples(idx)
-            self.run_one_item(Item(query_id, idx, data, label))
-        else:
-            bs = self.max_batchsize
-            for i in range(0, len(idx), bs):
-                data, label = self.ds.get_samples(idx[i:i+bs])
-                self.run_one_item(Item(query_id[i:i+bs], idx[i:i+bs], data, label))
+        bs = self.max_batchsize
+        for i in range(0, len(idx), bs):
+            data, label = self.ds.get_samples(idx[i:i+bs])
+            self.run_one_item(Item(query_id[i:i+bs], idx[i:i+bs], data, label))
 
     def finish(self):
         pass
@@ -395,20 +391,29 @@ class QueueRunner(RunnerBase):
                 tasks_queue.task_done()
                 break
             self.run_one_item(qitem)
-            tasks_queue.task_done()
 
-    def enqueue(self, query_samples):
+    def enqueue_batch(self, query_samples):
         idx = [q.index for q in query_samples]
         query_id = [q.id for q in query_samples]
-        if len(query_samples) < self.max_batchsize:
-            data, label = self.ds.get_samples(idx)
-            self.tasks.put(Item(query_id, idx, data, label))
-        else:
-            bs = self.max_batchsize
-            for i in range(0, len(idx), bs):
-                ie = i + bs
-                data, label = self.ds.get_samples(idx[i:ie])
-                self.tasks.put(Item(query_id[i:ie], idx[i:ie], data, label))
+        bs = self.max_batchsize
+        for i in range(0, len(idx), bs):
+            ie = i + bs
+            data, label = self.ds.get_samples(idx[i:ie])
+            self.tasks.put(Item(query_id[i:ie], idx[i:ie], data, label))
+
+    def enqueue(self, query_samples):
+        num_threads = os.getenv('ENQUEUE_NUM_THREADS', 2)
+        n = max(1, len(query_samples) // num_threads)
+        query_sample_chunks = [query_samples[i:i+n] for i in range(0, len(query_samples), n)]
+
+        enqueue_threads = []
+        for chunk in query_sample_chunks:
+            t = threading.Thread(target=self.enqueue_batch, args=(chunk,))
+            enqueue_threads.append(t)
+            t.start()
+
+        for t in enqueue_threads:
+            t.join()
 
     def finish(self):
         # exit all threads
@@ -471,7 +476,7 @@ def main():
     # If DeepSparse pass batch size, num streams, and scenario
     if args.backend.startswith('deepsparse'):
         backend.max_batchsize = args.max_batchsize
-        backend.num_streams = args.threads
+        backend.num_streams = os.getenv('DEEPSPARSE_NUM_STREAMS', args.threads // 4)
         backend.scenario = args.scenario
 
     # override image format if given

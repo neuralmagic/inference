@@ -7,10 +7,9 @@ DeepSparse Inference Engine backend (https://github.com/neuralmagic/deepsparse)
 import numpy as np
 
 import deepsparse
-from deepsparse.utils import get_input_names, get_output_names, model_to_path
+from deepsparse.utils import generate_random_inputs, get_input_names, get_output_names, model_to_path
 
 import backend
-
 
 def scenario_to_scheduler(scenario):
     if scenario == "SingleStream":
@@ -49,19 +48,24 @@ class BackendDeepsparse(backend.Backend):
         """Load model and find input/outputs from the model file."""
 
         # If the model is a SparseZoo stub, download it and get new path
-        model_path = model_to_path(model_path)
+        self.model_path = model_to_path(model_path)
 
         scheduler = scenario_to_scheduler(self.scenario)
 
         self.engine = deepsparse.Engine(
-            model=model_path,
+            model=self.model_path,
             batch_size=self.max_batchsize,
             scheduler=scheduler,
             num_streams=self.num_streams,
         )
 
-        self.inputs = inputs if inputs else get_input_names(model_path)
-        self.outputs = outputs if outputs else get_output_names(model_path)
+        self.inputs = inputs if inputs else get_input_names(self.model_path)
+        self.outputs = outputs if outputs else get_output_names(self.model_path)
+
+        print("Warming up engine...")
+        warmup_inputs = generate_random_inputs(self.model_path, self.max_batchsize)
+        for i in range(10):
+            self.engine.run(warmup_inputs, val_inp=False)
 
         return self
 
@@ -85,15 +89,13 @@ class BackendDeepsparse(backend.Backend):
             engine_inputs.append(data)
 
         # Run inference
-        engine_outputs = self.engine.run(engine_inputs)
+        engine_outputs = self.engine.run(engine_inputs, val_inp=False)
 
-        # Process outputs
         if batch_size < max_batch_size:
             # Take only the output of batch size for dynamic batches
-            final_outputs = [out[:batch_size] for out in engine_outputs]
-            return final_outputs
-        else:
-            return engine_outputs
+            engine_outputs = [out[:batch_size] for out in engine_outputs]
+
+        return engine_outputs
 
     def predict(self, feed):
         """Run the prediction"""
