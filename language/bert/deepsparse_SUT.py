@@ -64,8 +64,13 @@ class BERT_DeepSparse_SUT():
         self.batch_size = args.batch_size
         self.scenario = args.scenario
         self.scheduler = scenario_to_scheduler(args.scenario)
-        self.sequence_lengths = [64, 128, 192, 256, MAX_SEQ_LEN]
-        # self.sequence_lengths = [MAX_SEQ_LEN]
+
+        # Set from environment variable like DEEPSPARSE_SEQLENS="192, 384"
+        seqlens = os.getenv('DEEPSPARSE_SEQLENS', "192, {}".format(MAX_SEQ_LEN))
+        self.sequence_lengths = [int(s) for s in seqlens.split(',')]
+        if MAX_SEQ_LEN not in self.sequence_lengths:
+            self.sequence_lengths.append(MAX_SEQ_LEN)
+
         os.environ["NM_BIND_THREADS_TO_CORES"] = "1"
 
         print("Loading ONNX model...", self.model_path)
@@ -122,7 +127,7 @@ class BERT_DeepSparse_SUT():
                 response = lg.QuerySampleResponse(query_samples[i].id, bi[0], bi[1])
                 lg.QuerySamplesComplete([response])
 
-        elif self.scenario == "Offline":
+        elif self.scenario == "Offline" or self.scenario == "MultiStream":
             # Extract features from queries and split into buckets
             bucketed_features = {seqlen: [] for seqlen in self.sequence_lengths}
             for i in range(len(query_samples)):
