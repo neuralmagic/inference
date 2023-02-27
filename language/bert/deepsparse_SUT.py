@@ -18,6 +18,7 @@ import array
 import json
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 sys.path.insert(0, os.getcwd())
 
 import mlperf_loadgen as lg
@@ -50,10 +51,10 @@ class Item:
         self.query_id = query_id
         self.feature = feature
 
-def create_engines(model_path, batch_size, scheduler, sequence_lengths):
+def create_engines(model_path, batch_size, scheduler, sequence_lengths, num_streams=None):
     engines = {}
     for seq_len in sorted(sequence_lengths):
-        eng = Engine(model_path, batch_size=batch_size, scheduler=scheduler, input_shapes=[[batch_size, seq_len]])
+        eng = Engine(model_path, batch_size=batch_size, scheduler=scheduler, num_streams=num_streams, input_shapes=[[batch_size, seq_len]])
         engines[seq_len] = eng
     return engines
 
@@ -63,7 +64,13 @@ class BERT_DeepSparse_SUT():
         self.model_path = model_to_path(args.model_path)
         self.batch_size = args.batch_size
         self.scenario = args.scenario
+        self.num_streams = None
+        self.threadpool = None
+
         self.scheduler = scenario_to_scheduler(args.scenario)
+        if os.getenv('DEEPSPARSE_NUM_STREAMS'):
+            self.num_streams = int(os.getenv('DEEPSPARSE_NUM_STREAMS'))
+            self.threadpool = ThreadPoolExecutor(max_workers=self.num_streams)
 
         # Set from environment variable like DEEPSPARSE_SEQLENS="192, 384"
         seqlens = os.getenv('DEEPSPARSE_SEQLENS', "192, {}".format(MAX_SEQ_LEN))
@@ -74,7 +81,7 @@ class BERT_DeepSparse_SUT():
         os.environ["NM_BIND_THREADS_TO_CORES"] = "1"
 
         print("Loading ONNX model...", self.model_path)
-        self.engines = create_engines(self.model_path, batch_size=self.batch_size, scheduler=self.scheduler, sequence_lengths=self.sequence_lengths)
+        self.engines = create_engines(self.model_path, batch_size=self.batch_size, scheduler=self.scheduler, sequence_lengths=self.sequence_lengths, num_streams=self.num_streams)
 
         print("Constructing SUT...")
         self.sut = lg.ConstructSUT(self.issue_queries, self.flush_queries)
@@ -108,6 +115,23 @@ class BERT_DeepSparse_SUT():
         ]
         return fd
 
+    def batched_predict(self, batched_features):
+        unpadded_batch_size = len(batched_features)
+        bucket_seq_len = bucket_seq_len[0].feature.unpadded_input_ids.shape[-1]
+        fd = self.process_batch(batched_features)
+
+        scores = self.predict(fd, bucket_seq_len)
+
+        output = np.stack(scores, axis=-1)
+        if output.shape[1] < MAX_SEQ_LEN:
+            output = np.pad(output, ((0,0), (0,MAX_SEQ_LEN-output.shape[1]), (0,0)))
+
+        # sending responses individually
+        for sample in range(unpadded_batch_size):
+            response_array = array.array("B", output[sample].tobytes())
+            bi = response_array.buffer_info()
+            lg.QuerySamplesComplete([lg.QuerySampleResponse(batched_features[sample].query_id, bi[0], bi[1])])
+
     def issue_queries(self, query_samples):
         if self.scenario == "SingleStream" or self.scenario == "Server":
             for i in range(len(query_samples)):
@@ -135,22 +159,11 @@ class BERT_DeepSparse_SUT():
                 bucketed_features[eval_feature.min_pad_length].append(Item(query_samples[i].id, eval_feature))
 
             for bucket_seq_len, bucket_eval_features in bucketed_features.items():
-                batch_ind = 0
-                for batch_ind, batched_features in enumerate(batched_list(bucket_eval_features, self.batch_size)):
-                    unpadded_batch_size = len(batched_features)
-                    fd = self.process_batch(batched_features)
-
-                    scores = self.predict(fd, bucket_seq_len)
-
-                    output = np.stack(scores, axis=-1)
-                    if output.shape[1] < MAX_SEQ_LEN:
-                        output = np.pad(output, ((0,0), (0,MAX_SEQ_LEN-output.shape[1]), (0,0)))
-
-                    # sending responses individually
-                    for sample in range(unpadded_batch_size):
-                        response_array = array.array("B", output[sample].tobytes())
-                        bi = response_array.buffer_info()
-                        lg.QuerySamplesComplete([lg.QuerySampleResponse(batched_features[sample].query_id, bi[0], bi[1])])
+                if self.threadpool:
+                    self.threadpool.map(self.batched_predict, batched_list(bucket_eval_features, self.batch_size))
+                else:
+                    for batched_features in batched_list(bucket_eval_features, self.batch_size):
+                        self.batched_predict(batched_features)
 
         else:
             raise Exception("Unknown scenario", scenario)
