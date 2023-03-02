@@ -4,6 +4,7 @@ DeepSparse Inference Engine backend (https://github.com/neuralmagic/deepsparse)
 
 # pylint: disable=unused-argument,missing-docstring,useless-super-delegation
 
+import os
 import numpy as np
 
 import deepsparse
@@ -32,6 +33,7 @@ class BackendDeepsparse(backend.Backend):
         self.max_batchsize = None
         self.num_streams = None
         self.scenario = None
+        os.environ["NM_BIND_THREADS_TO_CORES"] = "1"
 
     def version(self):
         return deepsparse.__version__
