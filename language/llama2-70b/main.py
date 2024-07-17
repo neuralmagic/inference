@@ -8,7 +8,7 @@ import sys
 sys.path.insert(0, os.getcwd())
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("Llama-70B-MAIN")
+log = logging.getLogger("Llama-70B-NM")
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -60,6 +60,7 @@ def main():
     log_settings = lg.LogSettings()
     log_settings.log_output = log_output_settings
     log_settings.enable_trace = args.enable_log_trace
+
 
     if args.vllm:
         from SUT_API import SUT, SUTServer
