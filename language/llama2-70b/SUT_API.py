@@ -3,7 +3,7 @@ import time
 import numpy as np
 import array
 import torch
-from transformers import AutoTokenizer
+from transformers import LlamaTokenizer
 
 import json
 import pickle
@@ -23,7 +23,9 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("LLM-API-SERVER-SUT")
 
 def except_hook(args):
-    print(f"Thread failed with error: {args.exc_value}")
+    print(f"Thread failed with error:")
+    print(args.exc_value)
+    print(args.exc_traceback)
     os._exit(1)
 
 
@@ -48,7 +50,7 @@ class SUT():
                  use_cached_outputs=False,  # Set this to True *only for test accuracy runs* in case your prior session was killed partway through
                  workers=10):
 
-        self.model_path = model_path or "meta-llama/Llama-2-70b-chat-hf"
+        self.model_path = model_path or api_model_name or "meta-llama/Llama-2-70b-chat-hf"
         self.device = device
         self.api_servers = []
         if api_server:
@@ -81,13 +83,16 @@ class SUT():
         self.qsl = lg.ConstructQSL(self.data_object.total_sample_count, self.data_object.perf_count,
                                    self.data_object.LoadSamplesToRam, self.data_object.UnloadSamplesFromRam)
 
-        self.tokenizer = AutoTokenizer.from_pretrained(
+        self.tokenizer = LlamaTokenizer.from_pretrained(
             self.model_path,
             model_max_length=1024,
             padding_side="left",
+            add_prefix_space=False,
+            add_bos_token=False,
             use_fast=True)
 
         self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.eos_input_id = self.tokenizer.convert_tokens_to_ids(self.tokenizer.eos_token)
 
         self.num_workers = workers
         self.worker_threads = [None] * self.num_workers
@@ -175,6 +180,7 @@ class SUT():
                 assert len(input_ids_tensor) <= self.batch_size
 
                 tik2 = time.time()
+                # print("INPUT", input_ids_tensor)
 
                 # NOTE(mgoin): Threading is not necessary since we are submitting all queries in one request
                 # The API server should take care of mini-batches and scheduling
@@ -187,16 +193,21 @@ class SUT():
 
                 tik3 = time.time()
 
+            # print("direct output", output)
             processed_output = self.tokenizer(output, 
-                                              add_special_tokens=False,
                                               return_token_type_ids=False, 
                                               return_attention_mask=False)["input_ids"]
+            # print("processed_output", processed_output)
             assert len(qitem) == len(processed_output)
 
             for i in range(len(qitem)):
+                if processed_output[i][-1] != self.eos_input_id:
+                    processed_output[i].append(self.eos_input_id)
                 # NOTE(mgoin): Not optimal to make numpy arrays just to serialize
                 unpadded = np.array(processed_output[i])
                 n_tokens = unpadded.shape[0]
+                # print("NUM_TOKENS", n_tokens)
+                # print("OUTPUT", unpadded)
                 response_array = array.array("B", unpadded.tobytes())
                 bi = response_array.buffer_info()
                 response = [lg.QuerySampleResponse(qitem[i].id, bi[0], bi[1], n_tokens)]
@@ -252,6 +263,7 @@ class SUTServer(SUT):
 
     def start(self):
 
+        print(f"Starting {self.num_workers} workers")
         # Create worker threads
         for j in range(self.num_workers):
             worker = threading.Thread(target=self.process_queries)
@@ -308,11 +320,22 @@ class SUTServer(SUT):
                             decoded = line.decode()
                             preamble = "data: "
                             if decoded.startswith(preamble) and "[DONE]" not in decoded:
-                                text = json.loads(decoded[len(preamble):])["choices"][0]["text"]
+                                data = json.loads(decoded[len(preamble):])
+                                finish_reason = data["choices"][0]["finish_reason"]
+                                stop_reason = data["choices"][0]["stop_reason"]
+                                if (finish_reason is not None) or (stop_reason is not None):
+                                    if finish_reason == "stop":
+                                        token_cache.append(self.eos_input_id)
+                                    else:
+                                        print(f"Sequence finished without hitting eos token, finish_reason: {finish_reason}, stop_reason: {stop_reason}")
+                                    continue
+
+                                text = data["choices"][0]["text"]
                                 tokens = self.tokenizer(text, 
-                                                        add_special_tokens=False,
                                                         return_token_type_ids=False, 
                                                         return_attention_mask=False)["input_ids"]
+                                if len(tokens) == 0:
+                                    continue
                                 if first:
                                     self.first_token_queue.put((tokens[0], response_ids[0]))
                                     first = False
@@ -352,13 +375,12 @@ class SUTServer(SUT):
 
             if self.api_servers:
                 threading.Thread(target=self.async_process_query, args=(input_ids_tensor, qitem.id, server_idx)).start()
-                # server_idx = (server_idx + 1) % len(self.api_servers)
             else:
                 print("Error: Specify at least one API to which the request is to be sent!")
                 exit(1)
 
     def issue_queries(self, query_samples):
-
+        assert len(query_samples) == 1
         self.query_queue.put(query_samples[0])
 
 

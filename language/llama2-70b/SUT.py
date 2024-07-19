@@ -192,13 +192,14 @@ class SUT():
                 assert input_ids_tensor.shape[0] <= self.batch_size
 
                 tik2 = time.time()
-
+                # print("INPUT", input_ids_tensor)
                 pred_output_tokens = self.model.generate(
                     input_ids=input_ids_tensor,
                     attention_mask=input_masks_tensor,
                     pad_token_id=self.tokenizer.pad_token_id,
                     **gen_kwargs
                 )
+                # print("pred_output_tokens", pred_output_tokens)
 
                 tik3 = time.time()
 
@@ -208,6 +209,8 @@ class SUT():
 
             for i in range(len(qitem)):
                 n_tokens = processed_output[i].shape[0]
+                # print("NUM_TOKENS", n_tokens)
+                # print("OUTPUT", processed_output[i])
                 response_array = array.array("B", processed_output[i].tobytes())
                 bi = response_array.buffer_info()
                 response = [lg.QuerySampleResponse(qitem[i].id, bi[0], bi[1], n_tokens)]
