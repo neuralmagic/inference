@@ -174,8 +174,13 @@ class SUT():
                 # OpenAI-API servers don't require padding and can take input tokens 
                 # directly, so we build our input_ids_tensor as a jagged list
                 input_ids_tensor = []
+                sos_input_id = self.tokenizer.convert_tokens_to_ids("<s>")
+                eos_input_id = self.tokenizer.convert_tokens_to_ids("</s>")
                 for q in qitem:
-                    input_ids_tensor.append(self.data_object.input_ids[q.index].tolist()[0])
+                    sample = self.data_object.input_ids[q.index]
+                    processed = np.delete(sample, np.where(sample == sos_input_id))
+                    processed = np.delete(sample, np.where(sample == eos_input_id))
+                    input_ids_tensor.append(processed.tolist())
 
                 assert len(input_ids_tensor) <= self.batch_size
 
@@ -205,6 +210,7 @@ class SUT():
                     processed_output[i].append(self.eos_input_id)
                 # NOTE(mgoin): Not optimal to make numpy arrays just to serialize
                 unpadded = np.array(processed_output[i])
+                unpadded = np.delete(unpadded, np.where(unpadded == 2))
                 n_tokens = unpadded.shape[0]
                 # print("NUM_TOKENS", n_tokens)
                 # print("OUTPUT", unpadded)
