@@ -3,6 +3,7 @@ import time
 import numpy as np
 import array
 import torch
+from torch.nn.functional import pad
 from transformers import LlamaTokenizer
 
 import json
@@ -10,6 +11,9 @@ import pickle
 import time
 import threading
 import queue
+from concurrent.futures.thread import ThreadPoolExecutor
+import more_itertools as mit
+from itertools import repeat
 
 import logging
 from pathlib import Path
@@ -83,6 +87,7 @@ class SUT():
         self.qsl = lg.ConstructQSL(self.data_object.total_sample_count, self.data_object.perf_count,
                                    self.data_object.LoadSamplesToRam, self.data_object.UnloadSamplesFromRam)
 
+        print(f"LOADING LLAMA TOKENIZER FROM PATH: {self.model_path}")
         self.tokenizer = LlamaTokenizer.from_pretrained(
             self.model_path,
             model_max_length=1024,
@@ -148,8 +153,6 @@ class SUT():
         """Processor of the queued queries. User may choose to add batching logic """
 
         while True:
-            tik1 = time.time()
-
             qitem = self.query_queue.get()
             if qitem is None:
                 break
@@ -170,50 +173,45 @@ class SUT():
                 tok = None
             else:
                 # Construct / collate batch
-                # 
-                # OpenAI-API servers don't require padding and can take input tokens 
-                # directly, so we build our input_ids_tensor as a jagged list
+                max_seq_len = 1024
+
+                tik1 = time.time()
+
                 input_ids_tensor = []
-                sos_input_id = self.tokenizer.convert_tokens_to_ids("<s>")
-                eos_input_id = self.tokenizer.convert_tokens_to_ids("</s>")
+                input_len = []
                 for q in qitem:
-                    sample = self.data_object.input_ids[q.index]
-                    processed = np.delete(sample, np.where(sample == sos_input_id))
-                    processed = np.delete(sample, np.where(sample == eos_input_id))
-                    input_ids_tensor.append(processed.tolist())
+                    input_ids_tensor.append(pad(self.data_object.input_ids[q.index],
+                                                (max_seq_len - self.data_object.input_lens[q.index], 0, 0, 0),
+                                                value=self.tokenizer.pad_token_id))
+                    input_len.append(self.data_object.input_lens[q.index])
+                input_ids_tensor = torch.cat(input_ids_tensor)
 
-                assert len(input_ids_tensor) <= self.batch_size
+                assert input_ids_tensor.shape[0] <= self.batch_size
 
+                decoded = self.tokenizer.batch_decode(input_ids_tensor)
+                cleaned = [entry.replace('</s>','').replace('<s>','') for entry in decoded]
+                cleaned_chunks = [list(c) for c in mit.divide(len(self.api_servers), cleaned)]
+                
                 tik2 = time.time()
-                # print("INPUT", input_ids_tensor)
 
-                # NOTE(mgoin): Threading is not necessary since we are submitting all queries in one request
-                # The API server should take care of mini-batches and scheduling
                 if self.api_servers:
-                    assert len(self.api_servers) == 1
-                    output = self.api_action_handler(input_ids_tensor, 0)
+                    with ThreadPoolExecutor(max_workers=len(self.api_servers)) as executor:
+                        #needs to be tested
+                        output_chunks = list(executor.map(self.api_action_handler,cleaned_chunks,range(len(self.api_servers))))
+                    output = []
+                    for row in output_chunks:
+                        output += row
                 else:
                     print("Error: Specify at least one API to which the request is to be sent!")
                     exit(1)
 
                 tik3 = time.time()
 
-            # print("direct output", output)
-            processed_output = self.tokenizer(output, 
-                                              return_token_type_ids=False, 
-                                              return_attention_mask=False)["input_ids"]
-            # print("processed_output", processed_output)
-            assert len(qitem) == len(processed_output)
+                processed_output = np.array(self.tokenizer(output, padding='longest')['input_ids'])
 
             for i in range(len(qitem)):
-                if processed_output[i][-1] != self.eos_input_id:
-                    processed_output[i].append(self.eos_input_id)
-                # NOTE(mgoin): Not optimal to make numpy arrays just to serialize
-                unpadded = np.array(processed_output[i])
-                unpadded = np.delete(unpadded, np.where(unpadded == 2))
+                unpadded = np.delete(processed_output[i], np.where(processed_output[i] == 2))
                 n_tokens = unpadded.shape[0]
-                # print("NUM_TOKENS", n_tokens)
-                # print("OUTPUT", unpadded)
                 response_array = array.array("B", unpadded.tobytes())
                 bi = response_array.buffer_info()
                 response = [lg.QuerySampleResponse(qitem[i].id, bi[0], bi[1], n_tokens)]
@@ -307,11 +305,12 @@ class SUTServer(SUT):
             "prompt": input,
             "stream": True,
             **gen_kwargs,
+            'logprobs': 1
         }
 
         while True:
             try:
-                token_cache = []
+                token_s_cache = []
                 s = requests.Session()
                 first = True
                 with s.post(
@@ -324,40 +323,45 @@ class SUTServer(SUT):
                     for line in resp.iter_lines():
                         if line:
                             decoded = line.decode()
-                            preamble = "data: "
-                            if decoded.startswith(preamble) and "[DONE]" not in decoded:
-                                data = json.loads(decoded[len(preamble):])
+                            if decoded.startswith("data") and "[DONE]" not in decoded:
+                                data = json.loads(decoded[6:])
                                 finish_reason = data["choices"][0]["finish_reason"]
                                 stop_reason = data["choices"][0]["stop_reason"]
                                 if (finish_reason is not None) or (stop_reason is not None):
                                     if finish_reason == "stop":
-                                        token_cache.append(self.eos_input_id)
+                                        token_s = self.tokenizer.eos_token
+                                        token_s_cache.append(token_s)
                                     else:
                                         print(f"Sequence finished without hitting eos token, finish_reason: {finish_reason}, stop_reason: {stop_reason}")
                                     continue
 
-                                text = data["choices"][0]["text"]
-                                tokens = self.tokenizer(text, 
-                                                        return_token_type_ids=False, 
-                                                        return_attention_mask=False)["input_ids"]
-                                if len(tokens) == 0:
-                                    continue
-                                if first:
-                                    self.first_token_queue.put((tokens[0], response_ids[0]))
-                                    first = False
-                                token_cache.extend(tokens)
+                                inter = data["choices"][0]["logprobs"]
+                                if "top_logprobs" in inter:
+                                    token_s = list(inter["top_logprobs"][0].keys())[0]
+                                    if token_s == "":
+                                        #print(f"Warning: empty token. Last non-empty token was: \"{token_s_cache[-1]}\"")
+                                        continue
+
+                                    if first:
+                                        token_ids = self.tokenizer.encode(token_s)
+                                        self.first_token_queue.put((token_ids[0], response_ids[0]))
+                                        first = False
+                                    token_s_cache.append(str(token_s))
                 s.close()
-                if token_cache:
-                    return token_cache
+                if token_s_cache:
+                    # print("Request completed!")
+                    #print(token_s_cache)
+                    #print("".join(token_s_cache))
+                    return self.tokenizer.encode("".join(token_s_cache))
             except Exception as e:
                 s.close()
-                print("Connection failure")
-                print(f"An exception occurred: {type(e).__name__}")
-                print(f"Exception details: {e}")
+                print(f"Connection failure: {e}")
    
     def async_process_query(self, input_ids_tensor, qitem_id, idx):
+        decoded = self.tokenizer.decode(input_ids_tensor[0])
         response_ids = [qitem_id]
-        output_tokens = self.stream_api_vllm(input_ids_tensor, response_ids, idx)
+        output_tokens = self.stream_api_vllm(decoded, response_ids, idx)
+
         n_tokens = len(output_tokens)
         if n_tokens <= 1:
             print("WARNING: caught low token count")
@@ -377,7 +381,7 @@ class SUTServer(SUT):
             if qitem is None:
                 break
 
-            input_ids_tensor = self.data_object.input_ids[qitem.index].tolist()[0]
+            input_ids_tensor = self.data_object.input_ids[qitem.index]
 
             if self.api_servers:
                 threading.Thread(target=self.async_process_query, args=(input_ids_tensor, qitem.id, server_idx)).start()
