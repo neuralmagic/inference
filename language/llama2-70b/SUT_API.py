@@ -209,10 +209,10 @@ class SUT():
 
                 processed_output = np.array(self.tokenizer(output, padding='longest')['input_ids'])
 
-            for i in range(len(qitem)):
+            for i in range(len(processed_output)):
                 unpadded = np.delete(processed_output[i], np.where(processed_output[i] == 2))
                 n_tokens = unpadded.shape[0]
-                response_array = array.array("B", unpadded.tobytes())
+                response_array = array.array("B", np.array(unpadded, np.int32).tobytes())
                 bi = response_array.buffer_info()
                 response = [lg.QuerySampleResponse(qitem[i].id, bi[0], bi[1], n_tokens)]
                 lg.QuerySamplesComplete(response)
